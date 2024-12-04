@@ -1,4 +1,4 @@
-// Fragmenty ponizszego kodu moga byc objete jakas licencja
+// Some parts of the following code might or might not be covered by a license
 
 #include <stdio.h>
 #include <inttypes.h>
@@ -11,17 +11,13 @@
 #include "bmi270.h"
 #include "common.h"
 
-// Okreslana w m/s^2
 #define GRAVITY_EARTH (9.80665f)
 
-// Do oznaczania czujnikow
 #define ACCEL UINT8_C(0)
 #define GYRO UINT8_C(1)
 
-// Do warunkow
 #define TRUE 1
 
-// Struktura na przeliczone dane z czujnukow
 typedef struct
 {
     float x;
@@ -29,89 +25,81 @@ typedef struct
     float z;
 } vector3d;
 
-// Funkcja konfigurujaca czujniki (zwraca status)
 static int8_t set_accel_gyro_config(struct bmi2_dev *bmi);
 
-// Funkcja przeliczajaca wartosci bezposrednio z czujnikow na m/s^2
-// Przyjmuje jako argumenty wartosc surowa przyspieszenia i rozdzielczosc akcelerometru w bitach
-// Zwraca wartosc przyspieszenia w m/s^2
+// Converts raw sensor data to meters per second squared
 static float raw_to_mps2(int16_t val, uint8_t bit_width);
 
-// Funkcja przeliczajaca wartosci bezposrednio z czujnikow na m/s^2
-// Przyjmuje jako argumenty wartosc surowa predkosci katowej i rozdzielczosc zyroskopu w bitach
-// Zwraca wartosc predkosci katowej w stopniach na sekunde
+// Converts raw sensor data to degrees per second
 static float raw_to_dps(int16_t val, uint8_t bit_width);
 
-// Funkcja inicjalizujaca czujniki
-// UWAGA: TA FUNKCJA MOZE UNIERUCHOMIC WYKONYWANIE PROGRAMU w przypadku niepowodzenia inicjalizacji
-static void initialize_and_enable_accel_gyro(struct bmi2_dev *bmi);
+static int8_t initialize_and_enable_accel_gyro(struct bmi2_dev *bmi);
 
-// ----> Ta wlasciwa funkcja posrednio realizujaca czytanie danych z czujnikow <----
-// Przyjmuje jako argumenty strukture z konfiguracja bmi270 oraz dwie struktury, w ktorych zapisze dane z pomiaru.
-// Zwraca status
+// ----> Sensor data reading function <----
+// Accelerometer data stored in acc and gyroscope date stored in gyr
 static int8_t read_sensor_data(struct bmi2_dev *bmi, vector3d *acc, vector3d *gyr);
 
 void app_main()
 {
-    // Status
     int8_t rslt;
 
-    // Do konfiguracji bmi270
+    // Structure for bmi270 handling
     struct bmi2_dev bmi;
 
-    vector3d acc;
-    vector3d gyr;
+    vector3d accel_data;
+    vector3d gyro_data;
 
     printf("##Inicjalizacja##\n");
-    initialize_and_enable_accel_gyro(&bmi);
+
+    do
+    {
+        rslt = initialize_and_enable_accel_gyro(&bmi);
+        if(rslt != BMI2_OK) bmi2_coines_deinit();
+    } while(rslt != BMI2_OK);
+
     printf("##Inicjalizacja zakonczona sukcesem##\n\n");
 
     printf("##Czytanie danych##\n\n");
+
     while(TRUE)
     {
-        rslt = read_sensor_data(&bmi, &acc, &gyr);
+        rslt = read_sensor_data(&bmi, &accel_data, &gyro_data);
         bmi2_error_codes_print_result(rslt);
 
-        // Sprawdzenie, czy udalo sie zczytac dane
         if(rslt == BMI2_OK)
         {
             printf("##Poczatek zestawu danych##\n>Dane akceleromrtu:\nx: %4.2f\ny: %4.2f\nz: %4.2f\n",
-                    acc.x, acc.y, acc.z);
+                    accel_data.x, accel_data.y, accel_data.z);
 
             printf(">Dane zyroskopu:\nx: %4.2f\ny: %4.2f\nz: %4.2f\n##Koniec zestawu danych##\n\n",
-                    gyr.x, gyr.y, gyr.z);
+                    gyro_data.x, gyro_data.y, gyro_data.z);
         }
         else
         {
             printf("!!Blad pomiaru (kod %d)!!\n\n", rslt)
         }
 
-        // Opoznienie, by pomiary byly wykonywane nie czesciej niz 50ms
+        // 50ms delay between data sets
         vTaskDelay(50 / portTICK_PERIOD_MS);
     }
 }
 
 static int8_t read_sensor_data(struct bmi2_dev *bmi, vector3d *acc, vector3d *gyr)
 {
-    // Status
     int8_t rslt;
 
-    // Struktura do odbierania danych z czujnikow
+    // Structure for raw sensor data
     struct bmi2_sens_data sensor_data = { { 0 } };
 
-    // Zczytanie danych z czujnikow
     rslt = bmi2_get_sensor_data(&sensor_data, bmi);
     bmi2_error_codes_print_result(rslt);
 
-    // Sprawdzenie, czy udalo sie zczytac dane
     if((rslt == BMI2_OK) && (sensor_data.status & BMI2_DRDY_ACC) && (sensor_data.status & BMI2_DRDY_GYR))
     {
-        // Konwersja z surowych danych na m/s^2
         acc->x = raw_to_mps2(sensor_data.acc.x, bmi->resolution);
         acc->y = raw_to_mps2(sensor_data.acc.y, bmi->resolution);
         acc->z = raw_to_mps2(sensor_data.acc.z, bmi->resolution);
 
-        // Konwersja z surowych danych na dps
         gyr->x = raw_to_dps(sensor_data.gyr.x, bmi->resolution);
         gyr->y = raw_to_dps(sensor_data.gyr.y, bmi->resolution);
         gyr->z = raw_to_dps(sensor_data.gyr.z, bmi->resolution);
@@ -120,80 +108,67 @@ static int8_t read_sensor_data(struct bmi2_dev *bmi, vector3d *acc, vector3d *gy
     return rslt;
 }
 
-static void initialize_and_enable_accel_gyro(struct bmi2_dev *bmi)
+static int8_t initialize_and_enable_accel_gyro(struct bmi2_dev *bmi)
 {
-    // Status
     int8_t rslt;
 
-    // Potrzebne do inicjalizacji
+    // List of sensors whitch will be used
     uint8_t sensor_list[2] = { BMI2_ACCEL, BMI2_GYRO };
 
-    // Inicjalizacja interfejsu
-    do
-    {
+    // SPI interface init
     rslt = bmi2_interface_init(bmi, BMI2_SPI_INTF); // BMI2_I2C_INTF dla I2C
     bmi2_error_codes_print_result(rslt);
-    } while(rslt != BMI2_OK);
+    if(rslt != BMI2_OK) return rslt;
 
-    // Inicjalizacja bmi270
-    do
-    {
+    // BMI270 init
     rslt = bmi270_init(bmi);
     bmi2_error_codes_print_result(rslt);
-    } while(rslt != BMI2_OK);
+    if(rslt != BMI2_OK) return rslt;
     
-    // Konfiguracja ustawien czujnikow
-    do
-    {
+    // Sensors configuration
     rslt = set_accel_gyro_config(bmi);
     bmi2_error_codes_print_result(rslt);
-    } while(rslt != BMI2_OK);
+    if(rslt != BMI2_OK) return rslt;
     
-    // Aktywacja czujnikow
-    do
-    {
+    // Sensors enabling
     rslt = bmi2_sensor_enable(sensor_list, 2, bmi);
     bmi2_error_codes_print_result(rslt);
-    } while(rslt != BMI2_OK);
+    if(rslt != BMI2_OK) return rslt;
+
+    return BMI2_OK;
 }
 
 static int8_t set_accel_gyro_config(struct bmi2_dev *bmi)
 {
-    // Status
     int8_t rslt;
 
-    // Struktura do inicjalizacji akcelerometru i zyroskopu
+    // Structure for accelerometer and gyroscope configurations
     struct bmi2_sens_config config[2];
 
-    // Wybranie czujnikow do konfiguracji
     config[ACCEL].type = BMI2_ACCEL;
     config[GYRO].type = BMI2_GYRO;
 
-    // Pobranie domyslnych konfiguracji
+    // Storing default configurations in config
     rslt = bmi2_get_sensor_config(config, 2, bmi);
     bmi2_error_codes_print_result(rslt);
 
-    // Nie wiem co tu sie wlasciwie dzieje
-    /* Map data ready interrupt to interrupt pin. */
     rslt = bmi2_map_data_int(BMI2_DRDY_INT, BMI2_INT1, bmi);
     bmi2_error_codes_print_result(rslt);
 
     if (rslt == BMI2_OK)
     {
-        // W TYM BLOKU NALEZY WYBRAC KONFIGURACJE
+        // DEFAULT CONFIGURATIONS MIGHT BE CHNGED HERE
 
-        // Czestotliwosc wyjscia danych
-        // Dobralem nalblizej jak sie dalo jednego pomiaru na 50ms (nie wiem, czy mialem to zrobic)
+        // Accelerometer data output rate
         config[ACCEL].cfg.acc.odr = BMI2_ACC_ODR_25HZ;
 
-        // Zakres mierzonego przyspierszenia (+/- 2G, 4G, 8G, 16G)
-        // Jak patrzylem na parametry rakiet kola, to 8G jest chyba ok
+        // Acceleration range (+/- 2G, 4G, 8G, 16G)
+        // I think 8G will be enough
         config[ACCEL].cfg.acc.range = BMI2_ACC_RANGE_8G;
 
-        // Ilosc probek, z ktorych srednia sklada sie na pomiar
+        // Samples number for average
         config[ACCEL].cfg.acc.bwp = BMI2_ACC_NORMAL_AVG8;
 
-        // 
         /* Enable the filter performance mode where averaging of samples
          * will be done based on above set bandwidth and ODR.
          * There are two modes
@@ -203,10 +178,10 @@ static int8_t set_accel_gyro_config(struct bmi2_dev *bmi)
          */
         config[ACCEL].cfg.acc.filter_perf = BMI2_PERF_OPT_MODE;
 
-        // Czestotliwosc wyjscia danych (ta dla zyroskopu)
+        // Gyroscope data output rate
         config[GYRO].cfg.gyr.odr = BMI2_GYR_ODR_25HZ;
 
-        // Zakres mierzonej predkosci katowej
+        // Angular velocity range
         config[GYRO].cfg.gyr.range = BMI2_GYR_RANGE_2000;
 
         /* Gyroscope bandwidth parameters. By default the gyro bandwidth is in normal mode. */
@@ -227,7 +202,6 @@ static int8_t set_accel_gyro_config(struct bmi2_dev *bmi)
          */
         config[GYRO].cfg.gyr.filter_perf = BMI2_PERF_OPT_MODE;
 
-        // Ustawienie wybranych konfiguracji
         rslt = bmi2_set_sensor_config(config, 2, bmi);
         bmi2_error_codes_print_result(rslt);
     }
